@@ -1,0 +1,13 @@
+{
+  "license": "AGPL",
+  "tasks": {
+    "dev": "deno run --watch ./src/index.ts",
+    "test": "deno test",
+    "build_npm": "deno run -A scripts/build_npm.ts",
+    "publish_npm": "deno task build_npm && npm publish ./npm --access public"
+  },
+  "imports": {
+    "@std/assert": "https://deno.land/std@0.224.0/assert/mod.ts",
+    "dnt": "https://deno.land/x/dnt@0.40.0/mod.ts"
+  }
+}

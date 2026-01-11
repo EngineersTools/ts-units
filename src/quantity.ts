@@ -1,0 +1,336 @@
+// @ts-ignore: used for registry side effects
+import { DimensionSignature, AllowedUnit, CombineDimensionSignatures, DivideDimensionSignatures } from "./types/signature.ts";
+import { getUnitDefinition, getDimensionDefinition } from "./utils/registry.ts";
+import type { RegistryUnit } from "./units/index.ts";
+
+// Using a unique symbol for branding to achieve nominal typing
+const dimensionBrand = Symbol("dimensionBrand");
+
+
+
+// Base type for Quantity
+export interface Quantity<DS extends DimensionSignature> {
+  readonly [dimensionBrand]: DS;
+  value: number;
+  unitSymbol: string; 
+  // Internal (but needed for inter-instance operations)
+  readonly _dimensionSignature: DS;
+  readonly _valueInBaseUnits: number;
+
+  // Core Operations
+  add<OtherDS extends DimensionSignature>(
+    other: Quantity<OtherDS>
+  ): Quantity<DS>; 
+
+  subtract<OtherDS extends DimensionSignature>(
+    other: Quantity<OtherDS>
+  ): Quantity<DS>;
+
+  multiply<OtherDS extends DimensionSignature>(
+    other: Quantity<OtherDS>
+  ): Quantity<CombineDimensionSignatures<DS, OtherDS>>;
+
+  divide<OtherDS extends DimensionSignature>(
+    other: Quantity<OtherDS>
+  ): Quantity<DivideDimensionSignatures<DS, OtherDS>>;
+
+  // deno-lint-ignore ban-types
+  convertTo(targetUnitSymbol: RegistryUnit | (string & {})): Quantity<DS>;
+
+  // Comparisons
+  equals(other: Quantity<DS>): boolean;
+  isLessThan(other: Quantity<DS>): boolean;
+  isGreaterThan(other: Quantity<DS>): boolean;
+
+  // Interop
+  valueOf(): number;
+  toString(): string;
+  toJSON(): { value: number; unit: string };
+}
+
+export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
+  implements Quantity<DS>
+{
+  readonly [dimensionBrand]!: DS;
+  public readonly value: number;
+  public readonly unitSymbol: CurrentUnitSymbol;
+
+  public readonly _valueInBaseUnits: number;
+  public readonly _dimensionSignature: DS;
+
+  constructor(value: number, unitSymbol: CurrentUnitSymbol) {
+    const unitDef = getUnitDefinition(unitSymbol);
+    
+    this.value = value;
+    this.unitSymbol = unitSymbol;
+    this._valueInBaseUnits = value * unitDef.factor + (unitDef.offset ?? 0);
+
+    // For simple units, signature is { DimensionName: 1 }
+    // NOTE: This construct is primarily for starting from a known simple unit.
+    this._dimensionSignature = { [unitDef.dimensionName]: 1 } as unknown as DS; 
+  }
+
+  // --- Static Factories ---
+
+  private static create<
+    NewUnitSymbol extends string,
+    NewDS extends DimensionSignature
+  >(
+    valueInBaseUnits: number,
+    targetUnitSymbol: NewUnitSymbol,
+    dimensionSignature: NewDS
+  ): Q<NewUnitSymbol, NewDS> {
+    const targetUnitDef = getUnitDefinition(targetUnitSymbol); // Throws if not found, handling logic below for composite units needs care
+    
+    // Calculate value in target unit
+    // Note: This logic assumes targetUnitSymbol is a registered unit.
+    // Use `fromValueInBaseUnits` for derived logic.
+    const valueInTargetUnit = (valueInBaseUnits - (targetUnitDef.offset ?? 0)) / targetUnitDef.factor;
+
+    const q = Object.create(Q.prototype) as Q<NewUnitSymbol, NewDS>;
+    // @ts-ignore: partial initialization for safe private construction
+    q.value = valueInTargetUnit;
+    // @ts-ignore: safe
+    q.unitSymbol = targetUnitSymbol;
+    // @ts-ignore: safe
+    q._valueInBaseUnits = valueInBaseUnits;
+    // @ts-ignore: safe
+    q._dimensionSignature = dimensionSignature;
+    return q;
+  }
+
+  // --- Dimension Logic ---
+
+  static signatureToString(sig: DimensionSignature): string {
+    return Object.entries(sig)
+      .filter(([, power]) => power !== 0)
+      .map(([dim, power]) => (power === 1 ? dim : `${dim}^${power}`))
+      .join(".");
+  }
+
+  static areDimensionSignaturesEqual(
+    sig1: DimensionSignature,
+    sig2: DimensionSignature
+  ): boolean {
+    const keys1 = Object.keys(sig1);
+    const keys2 = Object.keys(sig2);
+    if (keys1.length !== keys2.length) return false;
+    for (const key of keys1) {
+      if (sig1[key] !== sig2[key]) return false;
+    }
+    return true;
+  }
+
+   static combineSignatures(
+    sig1: DimensionSignature,
+    sig2: DimensionSignature
+  ): DimensionSignature {
+    const resultSig: Record<string, number> = { ...sig1 };
+    for (const dimName in sig2) {
+      resultSig[dimName] = (resultSig[dimName] || 0) + sig2[dimName];
+    }
+    // Cleanup zeros
+    for (const dimName in resultSig) {
+      if (resultSig[dimName] === 0) delete resultSig[dimName];
+    }
+    return Object.freeze(resultSig);
+  }
+
+  static divideSignatures(
+    sig1: DimensionSignature,
+    sig2: DimensionSignature
+  ): DimensionSignature {
+    const resultSig: Record<string, number> = { ...sig1 };
+    for (const dimName in sig2) {
+      resultSig[dimName] = (resultSig[dimName] || 0) - sig2[dimName];
+    }
+    for (const dimName in resultSig) {
+      if (resultSig[dimName] === 0) delete resultSig[dimName];
+    }
+    return Object.freeze(resultSig);
+  }
+
+  static deriveCompositeUnitSymbol(sig: DimensionSignature): string {
+    if (Object.keys(sig).length === 0) return "dimensionless";
+    if (Object.keys(sig).length === 1) {
+      const [dimName, power] = Object.entries(sig)[0];
+      if (power === 1) {
+        // Try to look up base unit
+        // We can't easily look up by dimension name in registry without it being exported, 
+        // but we can assume we have access or pass it.
+        // Actually, registry.ts exports `getDimensionDefinition`.
+        try {
+            const dimDef = getDimensionDefinition(dimName);
+            return dimDef.baseUnitSymbol;
+        } catch {
+            // fallback
+        }
+      }
+    }
+    // Fallback composite generation
+    const numerator: string[] = [];
+    const denominator: string[] = [];
+    for (const [dimName, power] of Object.entries(sig)) {
+        if(power === 0) continue;
+        try {
+            const dimDef = getDimensionDefinition(dimName);
+            const unit = dimDef.baseUnitSymbol;
+            const part = Math.abs(power) === 1 ? unit : `${unit}^${Math.abs(power)}`;
+            if (power > 0) numerator.push(part);
+            else denominator.push(part);
+        } catch {
+            // If dimension not found (unlikely), skip
+        }
+    }
+    const numStr = numerator.join(".");
+    const denStr = denominator.join(".");
+    if (numerator.length === 0 && denominator.length > 0) return `1/${denStr}`;
+    if (denominator.length === 0) return numStr || "1";
+    return `${numStr}/${denStr}`;
+  }
+
+
+  // --- Instance Methods ---
+
+  add<OtherDS extends DimensionSignature>(other: Quantity<OtherDS>): Q<CurrentUnitSymbol, DS> {
+    if (!Q.areDimensionSignaturesEqual(this._dimensionSignature, other._dimensionSignature)) {
+      throw new Error(`Dimension mismatch: cannot add ${Q.signatureToString(other._dimensionSignature)} to ${Q.signatureToString(this._dimensionSignature)}`);
+    }
+    // Result is in CURRENT unit
+    // deno-lint-ignore no-explicit-any
+    const newValBase = this._valueInBaseUnits + (other as any)._valueInBaseUnits;
+    
+    return Q.create(newValBase, this.unitSymbol, this._dimensionSignature);
+  }
+
+  subtract<OtherDS extends DimensionSignature>(other: Quantity<OtherDS>): Q<CurrentUnitSymbol, DS> {
+     if (!Q.areDimensionSignaturesEqual(this._dimensionSignature, other._dimensionSignature)) {
+      throw new Error(`Dimension mismatch: cannot subtract ${Q.signatureToString(other._dimensionSignature)} from ${Q.signatureToString(this._dimensionSignature)}`);
+    }
+    // deno-lint-ignore no-explicit-any
+    const newValBase = this._valueInBaseUnits - (other as any)._valueInBaseUnits;
+    return Q.create(newValBase, this.unitSymbol, this._dimensionSignature);
+  }
+
+  multiply<OtherDS extends DimensionSignature>(
+    other: Quantity<OtherDS>
+  ): Q<string, CombineDimensionSignatures<DS, OtherDS>> {
+    const newSig = Q.combineSignatures(this._dimensionSignature, other._dimensionSignature);
+    // deno-lint-ignore no-explicit-any
+    const newValBase = this._valueInBaseUnits * (other as any)._valueInBaseUnits;
+    
+    // deno-lint-ignore no-explicit-any
+    return Q.fromValueInBaseUnits(newValBase, newSig) as any;
+  }
+
+  divide<OtherDS extends DimensionSignature>(
+    other: Quantity<OtherDS>
+  ): Q<string, DivideDimensionSignatures<DS, OtherDS>> {
+    // deno-lint-ignore no-explicit-any
+    if((other as any)._valueInBaseUnits === 0) throw new Error("Division by zero");
+    const newSig = Q.divideSignatures(this._dimensionSignature, other._dimensionSignature);
+    // deno-lint-ignore no-explicit-any
+    const newValBase = this._valueInBaseUnits / (other as any)._valueInBaseUnits;
+    // deno-lint-ignore no-explicit-any
+    return Q.fromValueInBaseUnits(newValBase, newSig) as any;
+  }
+
+
+
+  convertTo(targetUnitSymbol: AllowedUnit<DS>): Q<string, DS> {
+    const targetUnitDef = getUnitDefinition(targetUnitSymbol as string); // Throws if invalid unit
+    
+    // Check compatibility:
+    // This is slightly complex because DS is generic. 
+    // Ideally we check if targetUnit's dimension is compatible with this DS.
+    // Simplifying assumption: We only support converting simple units to simple units of same dimension for now,
+    // OR ensure the target unit belongs to the dimension described by DS (if DS is simple).
+    
+    // If DS has multiple dimensions, we can't really convert to a single "unit symbol" unless that symbol represents that composite dimension.
+    // But `getUnitDefinition` only returns registered units (mostly simple).
+    
+    // Check if the current signature matches the target unit's dimension signature.
+    // Target unit implies { [targetUnitDef.dimensionName]: 1 }
+    const targetSig = { [targetUnitDef.dimensionName]: 1 };
+    
+    if (!Q.areDimensionSignaturesEqual(this._dimensionSignature, targetSig as unknown as DimensionSignature)) {
+         throw new Error(`Cannot convert quantity with dimension ${Q.signatureToString(this._dimensionSignature)} to unit ${targetUnitSymbol} (dimension ${targetUnitDef.dimensionName})`);
+    }
+
+    // Conversion logic:
+    // valInTarget = valInBase / targetFactor
+    const newVal = (this._valueInBaseUnits - (targetUnitDef.offset ?? 0)) / targetUnitDef.factor;
+    
+    // We return a new Q. 
+    // Note: We use the generic 'string' for the unit symbol in the return type because 
+    // we can't easily prove 'targetUnitSymbol' matches a specific literal type here without more complex generics.
+    // The DS remains the same.
+    // deno-lint-ignore no-explicit-any
+    return new Q(newVal, targetUnitSymbol as any); 
+  }
+
+  // --- Interop & Output ---
+
+  valueOf(): number {
+    return this.value;
+  }
+
+  toString(): string {
+    return `${this.value.toPrecision(6)} ${this.unitSymbol}`;
+  }
+
+  toJSON() {
+      return { value: this.value, unit: this.unitSymbol };
+  }
+
+  equals(other: Quantity<DS>): boolean {
+       if (!Q.areDimensionSignaturesEqual(this._dimensionSignature, other._dimensionSignature)) return false;
+       // deno-lint-ignore no-explicit-any
+       return Math.abs(this._valueInBaseUnits - (other as any)._valueInBaseUnits) < 1e-9;
+  }
+
+  isLessThan(other: Quantity<DS>): boolean {
+    if (!Q.areDimensionSignaturesEqual(this._dimensionSignature, other._dimensionSignature)) throw new Error("Dimension mismatch");
+    // deno-lint-ignore no-explicit-any
+    return this._valueInBaseUnits < (other as any)._valueInBaseUnits;
+  }
+
+  isGreaterThan(other: Quantity<DS>): boolean {
+    if (!Q.areDimensionSignaturesEqual(this._dimensionSignature, other._dimensionSignature)) throw new Error("Dimension mismatch");
+    // deno-lint-ignore no-explicit-any
+    return this._valueInBaseUnits > (other as any)._valueInBaseUnits;
+  }
+
+  // --- Static Helper for Composite Creation ---
+  
+  static fromValueInBaseUnits<ResDS extends DimensionSignature>(
+    valueInBaseUnits: number,
+    dimensionSignature: ResDS
+  ): Q<string, ResDS> {
+      const derivedUnitSymbol = Q.deriveCompositeUnitSymbol(dimensionSignature);
+      
+      // Check if this symbol is actually a registered unit (e.g. if we derived 'm', it is registered)
+      // If it is registered, we can use its factor.
+    // ...
+    // Check if this symbol is actually a registered unit
+      try {
+        const _customDef = getUnitDefinition(derivedUnitSymbol);
+        // It's a real unit!
+        return Q.create(valueInBaseUnits, derivedUnitSymbol, dimensionSignature);
+      } catch {
+        // Not a registered unit.
+        // For composite units like "m/s", factor is 1 relative to base units if composed of base units.
+        // But deriveCompositeUnitSymbol ONLY uses base units (m, s, kg).
+        // So the factor is always 1 relative to that string representation!
+        // We just need to construct it manually because `create` tries to look it up.
+        
+        const q = Object.create(Q.prototype);
+        q.value = valueInBaseUnits; // Since factor is 1
+        q.unitSymbol = derivedUnitSymbol;
+        q._valueInBaseUnits = valueInBaseUnits;
+        q._dimensionSignature = dimensionSignature;
+        return q as Q<string, ResDS>;
+      }
+  }
+
+}
