@@ -1,5 +1,5 @@
 // @ts-ignore: used for registry side effects
-import { DimensionSignature, AllowedUnit, CombineDimensionSignatures, DivideDimensionSignatures } from "./types/signature.ts";
+import type { DimensionSignature, AllowedUnit, CombineDimensionSignatures, DivideDimensionSignatures } from "./types/signature.ts";
 import { getUnitDefinition, getDimensionDefinition } from "./utils/registry.ts";
 import type { RegistryUnit } from "./units/index.ts";
 
@@ -9,6 +9,10 @@ const dimensionBrand = Symbol("dimensionBrand");
 
 
 // Base type for Quantity
+/**
+ * Base interface for a Quantity, representing a scalar value with a specific dimension.
+ * @template DS The dimension signature (e.g., { Length: 1 }).
+ */
 export interface Quantity<DS extends DimensionSignature> {
   readonly [dimensionBrand]: DS;
   value: number;
@@ -18,28 +22,60 @@ export interface Quantity<DS extends DimensionSignature> {
   readonly _valueInBaseUnits: number;
 
   // Core Operations
+  /**
+   * Adds another quantity of the same dimension.
+   * @param other The quantity to add.
+   * @returns A new quantity representing the sum.
+   * @throws Error if dimensions do not match.
+   */
   add<OtherDS extends DimensionSignature>(
     other: Quantity<OtherDS>
   ): Quantity<DS>; 
 
+  /**
+   * Subtracts another quantity of the same dimension.
+   * @param other The quantity to subtract.
+   * @returns A new quantity representing the difference.
+   * @throws Error if dimensions do not match.
+   */
   subtract<OtherDS extends DimensionSignature>(
     other: Quantity<OtherDS>
   ): Quantity<DS>;
 
+  /**
+   * Multiplies by another quantity.
+   * @param other The quantity to multiply by.
+   * @returns A new quantity with the combined dimension.
+   */
   multiply<OtherDS extends DimensionSignature>(
     other: Quantity<OtherDS>
   ): Quantity<CombineDimensionSignatures<DS, OtherDS>>;
 
+  /**
+   * Divides by another quantity.
+   * @param other The quantity to divide by.
+   * @returns A new quantity with the resulting dimension.
+   * @throws Error if dividing by zero.
+   */
   divide<OtherDS extends DimensionSignature>(
     other: Quantity<OtherDS>
   ): Quantity<DivideDimensionSignatures<DS, OtherDS>>;
 
+  /**
+   * Converts the quantity to a different unit of the same dimension.
+   * @param targetUnitSymbol The symbol of the target unit (e.g., "km").
+   * @returns A new Q instance in the target unit.
+   * @throws Error if the target unit is incompatible.
+   */
   // deno-lint-ignore ban-types
   convertTo(targetUnitSymbol: RegistryUnit | (string & {})): Quantity<DS>;
 
   // Comparisons
+  /** Checks if this quantity is equal to another (within a small tolerance). */
   equals(other: Quantity<DS>): boolean;
+  /** Checks if this quantity is strictly less than another. */
   isLessThan(other: Quantity<DS>): boolean;
+  /** Checks if this quantity is strictly greater than another. */
   isGreaterThan(other: Quantity<DS>): boolean;
 
   // Interop
@@ -48,6 +84,9 @@ export interface Quantity<DS extends DimensionSignature> {
   toJSON(): { value: number; unit: string };
 }
 
+/**
+ * Concrete implementation of the Quantity interface.
+ */
 export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
   implements Quantity<DS>
 {
@@ -58,6 +97,11 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
   public readonly _valueInBaseUnits: number;
   public readonly _dimensionSignature: DS;
 
+  /**
+   * Creates a new Quantity instance.
+   * @param value The numerical value.
+   * @param unitSymbol The unit symbol (e.g., "m", "kg").
+   */
   constructor(value: number, unitSymbol: CurrentUnitSymbol) {
     const unitDef = getUnitDefinition(unitSymbol);
     
@@ -101,6 +145,7 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
 
   // --- Dimension Logic ---
 
+  /** Converts a dimension signature to a string representation (e.g., "Length^1.Time^-1"). */
   static signatureToString(sig: DimensionSignature): string {
     return Object.entries(sig)
       .filter(([, power]) => power !== 0)
@@ -108,6 +153,7 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
       .join(".");
   }
 
+  /** Checks if two dimension signatures are equal. */
   static areDimensionSignaturesEqual(
     sig1: DimensionSignature,
     sig2: DimensionSignature
@@ -121,6 +167,7 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
     return true;
   }
 
+   /** Combines two dimension signatures (addition of exponents). */
    static combineSignatures(
     sig1: DimensionSignature,
     sig2: DimensionSignature
@@ -136,6 +183,7 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
     return Object.freeze(resultSig);
   }
 
+  /** Divides two dimension signatures (subtraction of exponents). */
   static divideSignatures(
     sig1: DimensionSignature,
     sig2: DimensionSignature
@@ -150,6 +198,7 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
     return Object.freeze(resultSig);
   }
 
+  /** Derives a composite unit symbol string from a dimension signature. */
   static deriveCompositeUnitSymbol(sig: DimensionSignature): string {
     if (Object.keys(sig).length === 0) return "dimensionless";
     if (Object.keys(sig).length === 1) {
@@ -303,6 +352,11 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
 
   // --- Static Helper for Composite Creation ---
   
+  /**
+   * Helper to create a quantity from a value in base units and a dimension signature.
+   * Attempts to find a registered unit matching the derived symbol, otherwise falls back to constructing a custom one.
+   * @internal
+   */
   static fromValueInBaseUnits<ResDS extends DimensionSignature>(
     valueInBaseUnits: number,
     dimensionSignature: ResDS

@@ -14,7 +14,7 @@ await build({
   package: {
     // package.json properties
     name: "@eng-tools/ts-units",
-    version: "0.1.0",
+    version: "0.1.1",
     description: "A type-safe unit conversion library for TypeScript",
     license: "AGPL-3.0",
     repository: {

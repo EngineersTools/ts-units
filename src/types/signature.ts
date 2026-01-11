@@ -1,5 +1,5 @@
 
-import { 
+import type { 
   LengthUnit, 
   MassUnit, 
   TimeUnit,
@@ -10,13 +10,16 @@ import {
 } from "../units/index.ts";
 
 /**
- * Represents a Unit of Measure.
- * @template Name The symbol of the unit (e.g., 'm', 'kg').
- * @template Factor The conversion factor to the base unit.
+ * Represents a dimension signature where keys are dimension names (e.g., 'Length', 'Time')
+ * and values are their exponents (e.g., 1, -1, 2).
+ * Example: Speed might be { Length: 1, Time: -1 }.
  */
 export type DimensionSignature = Record<string, number>;
 
-// Helper to map Dimension Signature to Allowed Unit Types
+/**
+ * Helper type to map a Dimension Signature to the corresponding Allowed Unit Types.
+ * Used to restrict `convertTo` to valid unit symbols for a given dimension.
+ */
 export type AllowedUnit<DS extends DimensionSignature> =
   DS extends { Length: 1 } ? LengthUnit :
   DS extends { Mass: 1 } ? MassUnit :
@@ -69,7 +72,10 @@ type AddSmall<A extends number, B extends number> =
 
 // --- Implementation ---
 
-// Helper type: Combines two dimension signatures (for multiplication)
+/**
+ * Type-level addition of two dimension signatures.
+ * Used for multiplying quantities (adding exponents).
+ */
 export type CombineDimensionSignatures<
   DS1 extends DimensionSignature,
   DS2 extends DimensionSignature
@@ -83,7 +89,10 @@ export type CombineDimensionSignatures<
       : K extends keyof DS2 ? DS2[K] : never // Only in DS2
 };
 
-// Helper type: Divides two dimension signatures
+/**
+ * Type-level subtraction of two dimension signatures.
+ * Used for dividing quantities (subtracting exponents).
+ */
 export type DivideDimensionSignatures<
   DS1 extends DimensionSignature,
   DS2 extends DimensionSignature
