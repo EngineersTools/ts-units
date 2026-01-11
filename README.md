@@ -8,13 +8,13 @@ TypeScript/Deno.
 ### NPM (Node.js)
 
 ```bash
-npm install ts-units
+npm install @eng-tools/ts-units
 ```
 
 ### Deno
 
 ```bash
-deno add jsr:@cjgb/ts-units
+deno add jsr:@eng-tools/ts-units
 ```
 
 Or import directly:
