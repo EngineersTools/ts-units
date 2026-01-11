@@ -279,7 +279,7 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
     return `${this.value.toPrecision(6)} ${this.unitSymbol}`;
   }
 
-  toJSON() {
+  toJSON(): { value: number; unit: string } {
       return { value: this.value, unit: this.unitSymbol };
   }
 
