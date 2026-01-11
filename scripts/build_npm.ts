@@ -11,6 +11,7 @@ await build({
     deno: true,
   },
   importMap: "deno.json",
+  testPattern: "tests/**/*.test.ts",
   package: {
     // package.json properties
     name: "@eng-tools/ts-units",
@@ -25,7 +26,6 @@ await build({
       url: "https://github.com/EngineersTools/ts-units/issues",
     },
     private: false,
-    type: "module",
   },
   postBuild() {
     // steps to run after building and before running the tests
