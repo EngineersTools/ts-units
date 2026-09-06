@@ -1,19 +1,17 @@
 // @ts-ignore: used for registry side effects
-import type { DimensionSignature, AllowedUnit, CombineDimensionSignatures, DivideDimensionSignatures } from "./types/signature.ts";
+import type { DimensionSignature, CombineDimensionSignatures, DivideDimensionSignatures, ScaleDimensionSignature } from "./types/signature.ts";
 import { getUnitDefinition, getDimensionDefinition } from "./utils/registry.ts";
-import type { RegistryUnit } from "./units/index.ts";
+import { areSignaturesEquivalent } from "./utils/equivalence.ts";
 
 // Using a unique symbol for branding to achieve nominal typing
 const dimensionBrand = Symbol("dimensionBrand");
-
-
 
 // Base type for Quantity
 /**
  * Base interface for a Quantity, representing a scalar value with a specific dimension.
  * @template DS The dimension signature (e.g., { Length: 1 }).
  */
-export interface Quantity<DS extends DimensionSignature> {
+export interface Quantity<DS extends DimensionSignature, Units extends string = string> {
   readonly [dimensionBrand]: DS;
   value: number;
   unitSymbol: string; 
@@ -28,9 +26,9 @@ export interface Quantity<DS extends DimensionSignature> {
    * @returns A new quantity representing the sum.
    * @throws Error if dimensions do not match.
    */
-  add<OtherDS extends DimensionSignature>(
-    other: Quantity<OtherDS>
-  ): Quantity<DS>; 
+  add<OtherUnits extends string>(
+    other: Quantity<DS, OtherUnits>
+  ): Quantity<DS, Units>;
 
   /**
    * Subtracts another quantity of the same dimension.
@@ -38,18 +36,18 @@ export interface Quantity<DS extends DimensionSignature> {
    * @returns A new quantity representing the difference.
    * @throws Error if dimensions do not match.
    */
-  subtract<OtherDS extends DimensionSignature>(
-    other: Quantity<OtherDS>
-  ): Quantity<DS>;
+  subtract<OtherUnits extends string>(
+    other: Quantity<DS, OtherUnits>
+  ): Quantity<DS, Units>;
 
   /**
    * Multiplies by another quantity.
    * @param other The quantity to multiply by.
    * @returns A new quantity with the combined dimension.
    */
-  multiply<OtherDS extends DimensionSignature>(
-    other: Quantity<OtherDS>
-  ): Quantity<CombineDimensionSignatures<DS, OtherDS>>;
+  multiply<OtherDS extends DimensionSignature, OtherUnits extends string>(
+    other: Quantity<OtherDS, OtherUnits>
+  ): Quantity<CombineDimensionSignatures<DS, OtherDS>, string>;
 
   /**
    * Divides by another quantity.
@@ -57,9 +55,16 @@ export interface Quantity<DS extends DimensionSignature> {
    * @returns A new quantity with the resulting dimension.
    * @throws Error if dividing by zero.
    */
-  divide<OtherDS extends DimensionSignature>(
-    other: Quantity<OtherDS>
-  ): Quantity<DivideDimensionSignatures<DS, OtherDS>>;
+  divide<OtherDS extends DimensionSignature, OtherUnits extends string>(
+    other: Quantity<OtherDS, OtherUnits>
+  ): Quantity<DivideDimensionSignatures<DS, OtherDS>, string>;
+
+  /**
+   * Raises this quantity to an integer power.
+   * @param exponent The integer exponent.
+   * @returns A new quantity with each dimension exponent scaled accordingly.
+   */
+  pow<Exponent extends number>(exponent: Exponent): Quantity<ScaleDimensionSignature<DS, Exponent>, string>;
 
   /**
    * Converts the quantity to a different unit of the same dimension.
@@ -67,16 +72,28 @@ export interface Quantity<DS extends DimensionSignature> {
    * @returns A new Q instance in the target unit.
    * @throws Error if the target unit is incompatible.
    */
-  // deno-lint-ignore ban-types
-  convertTo(targetUnitSymbol: RegistryUnit | (string & {})): Quantity<DS>;
+  convertTo<TargetUnit extends Units>(targetUnitSymbol: TargetUnit): Quantity<DS, TargetUnit>;
 
   // Comparisons
-  /** Checks if this quantity is equal to another (within a small tolerance). */
-  equals(other: Quantity<DS>): boolean;
-  /** Checks if this quantity is strictly less than another. */
-  isLessThan(other: Quantity<DS>): boolean;
-  /** Checks if this quantity is strictly greater than another. */
-  isGreaterThan(other: Quantity<DS>): boolean;
+  /**
+   * Checks if this quantity is equal to another (within a small tolerance).
+   * Accepts a quantity of any dimension signature; if the other dimension is
+   * not equivalent to this one (see `defineEquivalence`), this returns `false`
+   * (see `isLessThan`/`isGreaterThan` for the throwing variants).
+   */
+  equals(other: Quantity<DimensionSignature, string>): boolean;
+  /**
+   * Checks if this quantity is strictly less than another.
+   * Accepts a quantity of any dimension signature, but throws at runtime if
+   * the other dimension is not equivalent to this one (see `defineEquivalence`).
+   */
+  isLessThan(other: Quantity<DimensionSignature, string>): boolean;
+  /**
+   * Checks if this quantity is strictly greater than another.
+   * Accepts a quantity of any dimension signature, but throws at runtime if
+   * the other dimension is not equivalent to this one (see `defineEquivalence`).
+   */
+  isGreaterThan(other: Quantity<DimensionSignature, string>): boolean;
 
   // Interop
   valueOf(): number;
@@ -87,8 +104,11 @@ export interface Quantity<DS extends DimensionSignature> {
 /**
  * Concrete implementation of the Quantity interface.
  */
-export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
-  implements Quantity<DS>
+export class Q<
+  CurrentUnitSymbol extends string,
+  DS extends DimensionSignature,
+  Units extends string = CurrentUnitSymbol,
+> implements Quantity<DS, Units>
 {
   readonly [dimensionBrand]!: DS;
   public readonly value: number;
@@ -118,12 +138,13 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
 
   private static create<
     NewUnitSymbol extends string,
-    NewDS extends DimensionSignature
+    NewDS extends DimensionSignature,
+    NewUnits extends string = NewUnitSymbol,
   >(
     valueInBaseUnits: number,
     targetUnitSymbol: NewUnitSymbol,
     dimensionSignature: NewDS
-  ): Q<NewUnitSymbol, NewDS> {
+  ): Q<NewUnitSymbol, NewDS, NewUnits> {
     const targetUnitDef = getUnitDefinition(targetUnitSymbol); // Throws if not found, handling logic below for composite units needs care
     
     // Calculate value in target unit
@@ -131,7 +152,7 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
     // Use `fromValueInBaseUnits` for derived logic.
     const valueInTargetUnit = (valueInBaseUnits - (targetUnitDef.offset ?? 0)) / targetUnitDef.factor;
 
-    const q = Object.create(Q.prototype) as Q<NewUnitSymbol, NewDS>;
+    const q = Object.create(Q.prototype) as Q<NewUnitSymbol, NewDS, NewUnits>;
     // @ts-ignore: partial initialization for safe private construction
     q.value = valueInTargetUnit;
     // @ts-ignore: safe
@@ -153,18 +174,12 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
       .join(".");
   }
 
-  /** Checks if two dimension signatures are equal. */
+  /** Checks if two dimension signatures are equal, resolving any declared equivalences (e.g. Force <-> Mass.Length/Time^2). */
   static areDimensionSignaturesEqual(
     sig1: DimensionSignature,
     sig2: DimensionSignature
   ): boolean {
-    const keys1 = Object.keys(sig1);
-    const keys2 = Object.keys(sig2);
-    if (keys1.length !== keys2.length) return false;
-    for (const key of keys1) {
-      if (sig1[key] !== sig2[key]) return false;
-    }
-    return true;
+    return areSignaturesEquivalent(sig1, sig2);
   }
 
    /** Combines two dimension signatures (addition of exponents). */
@@ -241,7 +256,7 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
 
   // --- Instance Methods ---
 
-  add<OtherDS extends DimensionSignature>(other: Quantity<OtherDS>): Q<CurrentUnitSymbol, DS> {
+  add<OtherUnits extends string>(other: Quantity<DS, OtherUnits>): Q<CurrentUnitSymbol, DS, Units> {
     if (!Q.areDimensionSignaturesEqual(this._dimensionSignature, other._dimensionSignature)) {
       throw new Error(`Dimension mismatch: cannot add ${Q.signatureToString(other._dimensionSignature)} to ${Q.signatureToString(this._dimensionSignature)}`);
     }
@@ -249,21 +264,21 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
     // deno-lint-ignore no-explicit-any
     const newValBase = this._valueInBaseUnits + (other as any)._valueInBaseUnits;
     
-    return Q.create(newValBase, this.unitSymbol, this._dimensionSignature);
+    return Q.create(newValBase, this.unitSymbol, this._dimensionSignature) as Q<CurrentUnitSymbol, DS, Units>;
   }
 
-  subtract<OtherDS extends DimensionSignature>(other: Quantity<OtherDS>): Q<CurrentUnitSymbol, DS> {
+  subtract<OtherUnits extends string>(other: Quantity<DS, OtherUnits>): Q<CurrentUnitSymbol, DS, Units> {
      if (!Q.areDimensionSignaturesEqual(this._dimensionSignature, other._dimensionSignature)) {
       throw new Error(`Dimension mismatch: cannot subtract ${Q.signatureToString(other._dimensionSignature)} from ${Q.signatureToString(this._dimensionSignature)}`);
     }
     // deno-lint-ignore no-explicit-any
     const newValBase = this._valueInBaseUnits - (other as any)._valueInBaseUnits;
-    return Q.create(newValBase, this.unitSymbol, this._dimensionSignature);
+    return Q.create(newValBase, this.unitSymbol, this._dimensionSignature) as Q<CurrentUnitSymbol, DS, Units>;
   }
 
-  multiply<OtherDS extends DimensionSignature>(
-    other: Quantity<OtherDS>
-  ): Q<string, CombineDimensionSignatures<DS, OtherDS>> {
+  multiply<OtherDS extends DimensionSignature, OtherUnits extends string>(
+    other: Quantity<OtherDS, OtherUnits>
+  ): Q<string, CombineDimensionSignatures<DS, OtherDS>, string> {
     const newSig = Q.combineSignatures(this._dimensionSignature, other._dimensionSignature);
     // deno-lint-ignore no-explicit-any
     const newValBase = this._valueInBaseUnits * (other as any)._valueInBaseUnits;
@@ -272,9 +287,9 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
     return Q.fromValueInBaseUnits(newValBase, newSig) as any;
   }
 
-  divide<OtherDS extends DimensionSignature>(
-    other: Quantity<OtherDS>
-  ): Q<string, DivideDimensionSignatures<DS, OtherDS>> {
+  divide<OtherDS extends DimensionSignature, OtherUnits extends string>(
+    other: Quantity<OtherDS, OtherUnits>
+  ): Q<string, DivideDimensionSignatures<DS, OtherDS>, string> {
     // deno-lint-ignore no-explicit-any
     if((other as any)._valueInBaseUnits === 0) throw new Error("Division by zero");
     const newSig = Q.divideSignatures(this._dimensionSignature, other._dimensionSignature);
@@ -284,9 +299,31 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
     return Q.fromValueInBaseUnits(newValBase, newSig) as any;
   }
 
+  pow<Exponent extends number>(
+    exponent: Exponent
+  ): Q<string, ScaleDimensionSignature<DS, Exponent>, string> {
+    if (!Number.isInteger(exponent) || !Number.isFinite(exponent)) {
+      throw new Error("Exponent must be a finite integer");
+    }
+    if (exponent < 0 && this._valueInBaseUnits === 0) {
+      throw new Error("Division by zero");
+    }
+
+    const newSig: DimensionSignature = {};
+    for (const [dimensionName, power] of Object.entries(this._dimensionSignature)) {
+      const scaledPower = power * exponent;
+      if (scaledPower !== 0) newSig[dimensionName] = scaledPower;
+    }
+
+    return Q.fromValueInBaseUnits(
+      Math.pow(this._valueInBaseUnits, exponent),
+      newSig
+    ) as Q<string, ScaleDimensionSignature<DS, Exponent>, string>;
+  }
 
 
-  convertTo(targetUnitSymbol: AllowedUnit<DS>): Q<string, DS> {
+
+  convertTo<TargetUnit extends Units>(targetUnitSymbol: TargetUnit): Q<TargetUnit, DS, TargetUnit> {
     const targetUnitDef = getUnitDefinition(targetUnitSymbol as string); // Throws if invalid unit
     
     // Check compatibility:
@@ -314,8 +351,7 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
     // Note: We use the generic 'string' for the unit symbol in the return type because 
     // we can't easily prove 'targetUnitSymbol' matches a specific literal type here without more complex generics.
     // The DS remains the same.
-    // deno-lint-ignore no-explicit-any
-    return new Q(newVal, targetUnitSymbol as any); 
+    return new Q(newVal, targetUnitSymbol);
   }
 
   // --- Interop & Output ---
@@ -332,19 +368,19 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
       return { value: this.value, unit: this.unitSymbol };
   }
 
-  equals(other: Quantity<DS>): boolean {
+  equals(other: Quantity<DimensionSignature, string>): boolean {
        if (!Q.areDimensionSignaturesEqual(this._dimensionSignature, other._dimensionSignature)) return false;
        // deno-lint-ignore no-explicit-any
        return Math.abs(this._valueInBaseUnits - (other as any)._valueInBaseUnits) < 1e-9;
   }
 
-  isLessThan(other: Quantity<DS>): boolean {
+  isLessThan(other: Quantity<DimensionSignature, string>): boolean {
     if (!Q.areDimensionSignaturesEqual(this._dimensionSignature, other._dimensionSignature)) throw new Error("Dimension mismatch");
     // deno-lint-ignore no-explicit-any
     return this._valueInBaseUnits < (other as any)._valueInBaseUnits;
   }
 
-  isGreaterThan(other: Quantity<DS>): boolean {
+  isGreaterThan(other: Quantity<DimensionSignature, string>): boolean {
     if (!Q.areDimensionSignaturesEqual(this._dimensionSignature, other._dimensionSignature)) throw new Error("Dimension mismatch");
     // deno-lint-ignore no-explicit-any
     return this._valueInBaseUnits > (other as any)._valueInBaseUnits;
@@ -360,7 +396,7 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
   static fromValueInBaseUnits<ResDS extends DimensionSignature>(
     valueInBaseUnits: number,
     dimensionSignature: ResDS
-  ): Q<string, ResDS> {
+  ): Q<string, ResDS, string> {
       const derivedUnitSymbol = Q.deriveCompositeUnitSymbol(dimensionSignature);
       
       // Check if this symbol is actually a registered unit (e.g. if we derived 'm', it is registered)
@@ -383,7 +419,7 @@ export class Q<CurrentUnitSymbol extends string, DS extends DimensionSignature>
         q.unitSymbol = derivedUnitSymbol;
         q._valueInBaseUnits = valueInBaseUnits;
         q._dimensionSignature = dimensionSignature;
-        return q as Q<string, ResDS>;
+        return q as Q<string, ResDS, string>;
       }
   }
 
