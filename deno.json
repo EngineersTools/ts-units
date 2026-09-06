@@ -3,7 +3,6 @@
   "version": "0.2.1",
   "exports": "./src/index.ts",
   "description": "A type-safe unit conversion library for TypeScript",
-  "license": "AGPL",
   "tasks": {
     "dev": "deno run --watch ./src/index.ts",
     "test": "deno test --allow-run",
