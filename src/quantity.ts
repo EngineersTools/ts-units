@@ -41,23 +41,25 @@ export interface Quantity<DS extends DimensionSignature, Units extends string = 
   ): Quantity<DS, Units>;
 
   /**
-   * Multiplies by another quantity.
-   * @param other The quantity to multiply by.
-   * @returns A new quantity with the combined dimension.
+   * Multiplies by another quantity or by a plain numeric literal.
+   * @param other The quantity or number to multiply by.
+   * @returns A new quantity with the combined dimension (or the same dimension, if multiplying by a number).
    */
   multiply<OtherDS extends DimensionSignature, OtherUnits extends string>(
     other: Quantity<OtherDS, OtherUnits>
   ): Quantity<CombineDimensionSignatures<DS, OtherDS>, string>;
+  multiply(other: number): Quantity<DS, Units>;
 
   /**
-   * Divides by another quantity.
-   * @param other The quantity to divide by.
-   * @returns A new quantity with the resulting dimension.
+   * Divides by another quantity or by a plain numeric literal.
+   * @param other The quantity or number to divide by.
+   * @returns A new quantity with the resulting dimension (or the same dimension, if dividing by a number).
    * @throws Error if dividing by zero.
    */
   divide<OtherDS extends DimensionSignature, OtherUnits extends string>(
     other: Quantity<OtherDS, OtherUnits>
   ): Quantity<DivideDimensionSignatures<DS, OtherDS>, string>;
+  divide(other: number): Quantity<DS, Units>;
 
   /**
    * Raises this quantity to an integer power.
@@ -278,7 +280,15 @@ export class Q<
 
   multiply<OtherDS extends DimensionSignature, OtherUnits extends string>(
     other: Quantity<OtherDS, OtherUnits>
-  ): Q<string, CombineDimensionSignatures<DS, OtherDS>, string> {
+  ): Q<string, CombineDimensionSignatures<DS, OtherDS>, string>;
+  multiply(other: number): Q<CurrentUnitSymbol, DS, Units>;
+  multiply<OtherDS extends DimensionSignature, OtherUnits extends string>(
+    other: Quantity<OtherDS, OtherUnits> | number
+  ): Q<string, CombineDimensionSignatures<DS, OtherDS>, string> | Q<CurrentUnitSymbol, DS, Units> {
+    if (typeof other === "number") {
+      return Q.create(this._valueInBaseUnits * other, this.unitSymbol, this._dimensionSignature) as Q<CurrentUnitSymbol, DS, Units>;
+    }
+
     const newSig = Q.combineSignatures(this._dimensionSignature, other._dimensionSignature);
     // deno-lint-ignore no-explicit-any
     const newValBase = this._valueInBaseUnits * (other as any)._valueInBaseUnits;
@@ -289,7 +299,16 @@ export class Q<
 
   divide<OtherDS extends DimensionSignature, OtherUnits extends string>(
     other: Quantity<OtherDS, OtherUnits>
-  ): Q<string, DivideDimensionSignatures<DS, OtherDS>, string> {
+  ): Q<string, DivideDimensionSignatures<DS, OtherDS>, string>;
+  divide(other: number): Q<CurrentUnitSymbol, DS, Units>;
+  divide<OtherDS extends DimensionSignature, OtherUnits extends string>(
+    other: Quantity<OtherDS, OtherUnits> | number
+  ): Q<string, DivideDimensionSignatures<DS, OtherDS>, string> | Q<CurrentUnitSymbol, DS, Units> {
+    if (typeof other === "number") {
+      if (other === 0) throw new Error("Division by zero");
+      return Q.create(this._valueInBaseUnits / other, this.unitSymbol, this._dimensionSignature) as Q<CurrentUnitSymbol, DS, Units>;
+    }
+
     // deno-lint-ignore no-explicit-any
     if((other as any)._valueInBaseUnits === 0) throw new Error("Division by zero");
     const newSig = Q.divideSignatures(this._dimensionSignature, other._dimensionSignature);

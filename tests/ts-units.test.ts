@@ -177,6 +177,24 @@ Deno.test("unit binary operations work correctly", () => {
   assertEquals(quotient.unitSymbol, "dimensionless");
 });
 
+Deno.test("multiplication of units with numerical values works correctly", () => {
+  const quantity = Length.quantity(2, "m");
+  const factor = 3;
+
+  const product = quantity.multiply(factor);
+  assertEquals(product.value, 6);
+  assertEquals(product.unitSymbol, "m");
+});
+
+Deno.test("division of units with numerical values works correctly", () => {
+  const quantity = Length.quantity(6, "m");
+  const factor = 3;
+
+  const quotient = quantity.divide(factor);
+  assertEquals(quotient.value, 2);
+  assertEquals(quotient.unitSymbol, "m");
+});
+
 Deno.test("unit exponentiation works correctly", () => {
   const quantity = Length.quantity(2, "m");
 
