@@ -1,21 +1,66 @@
-# ts-units API reference
+﻿# ts-units API reference
 
-This document describes the implementation and the contracts that matter when
-building an application with `ts-units`. The package is a registry-driven
-engine: it supplies dimensional behavior, while the application supplies
-dimensions, units, symbols, and conversion factors.
+This document describes the current implementation and runtime contracts of the `ts-units` package.
+
+The library is registry-based: dimensions and units are registered once, then reused through typed helper objects and the `Q` quantity class. It ships with a default catalog of SI and common engineering dimensions, while also allowing custom domains to register their own dimensions and symbols.
 
 ## 1. Package boundary
 
-Importing `@eng-tools/ts-units` registers nothing. `getAllDimensions()` starts
-empty, and `new Q(1, "m")` fails until some definition registers `m`. There are
-no built-in SI dimensions, aliases, unit factories, or reserved dimension names.
-The application should register its catalog once during startup.
+The package entry point exports both runtime APIs and type helpers:
 
-The README contains a guided introduction. This file focuses on signatures,
-runtime rules, and edge cases.
+```typescript
+import {
+  Q,
+  Quantity,
+  defineDimension,
+  defineComplexDimension,
+  defineEquivalence,
+  getAllDimensions,
+  getDimensionDefinition,
+  getUnitDefinition,
+  type DimensionSignature,
+  type SimpleDimensionSignature,
+  type CombineDimensionSignatures,
+  type DivideDimensionSignatures,
+} from "@eng-tools/ts-units";
+```
 
-## 2. Registering simple dimensions
+Importing the package does not leave the library empty: the entry point also re-exports the built-in predefined catalog (`Length`, `Mass`, `Time`, `Temperature`, `Velocity`, `Area`, etc.). Definitions are registered at module import time, and custom dimensions can still be added with `defineDimension` and related helpers.
+
+## 2. Built-in dimensions and predefined units
+
+A snapshot of the shipped catalog includes:
+
+- `Length`: `m`, `km`, `cm`, `mm`, `µm`, `nm`, `pm`, `ft`, `in`, `yd`, `mi`, `nmi`, `au`, `ly`, `pc`
+- `Mass`: `kg`, `g`, `mg`, `µg`, `t`, `lb`, `oz`, `st`, `ton`, `lton`
+- `Time`: `s`, `ms`, `µs`, `ns`, `min`, `h`, `d`, `wk`, `yr`
+- `ElectricCurrent`: `A`, `mA`, `kA`, `µA`
+- `Temperature`: `K`, `degC`, `degF`, `degR`
+- `AmountOfSubstance`: `mol`, `mmol`, `kmol`, `µmol`
+- `LuminousIntensity`: `cd`, `mcd`, `kcd`
+- Derived dimensions such as `Area`, `Velocity`, `Acceleration`, `Pressure`, `Torque`, `Frequency`, `ElectricPotential`, `ElectricEnergy`, etc.
+
+Example:
+
+```typescript
+import { Length, Velocity, Temperature, m, km, s } from "@eng-tools/ts-units";
+
+const distance = Length.quantity(1, "km");
+console.log(distance.convertTo("m").value); // 1000
+
+const speed = Velocity.quantity(36, "km/h");
+console.log(speed.convertTo("m/s").value); // 10
+
+const room = Temperature.quantity(20, "degC");
+console.log(room.convertTo("K").value); // 293.15
+
+console.log(m(12).convertTo("cm").value); // 1200
+console.log(s(2).value); // 2
+```
+
+## 3. Simple dimension definitions
+
+`defineDimension` registers a named dimension and its units. Each unit declares a positive numeric conversion factor, and optionally an affine `offset` for temperature-like systems.
 
 ```typescript
 import { defineDimension } from "@eng-tools/ts-units";
@@ -28,25 +73,28 @@ const Length = defineDimension(
       m: { factor: 1 },
       km: { factor: 1000 },
       cm: { factor: 0.01 },
+      in: { factor: 0.0254 },
     },
   } as const,
 );
 
 const distance = Length.quantity(5, "km");
-const meters = distance.convertTo("m");
+const inMeters = distance.convertTo("m");
 const localMeters = Length.factory("m");
 
-console.log(meters.value); // 5000
+console.log(inMeters.value); // 5000
 console.log(localMeters(12).unitSymbol); // "m"
 ```
 
-The definition shape is:
+The type structure is:
 
 ```typescript
 type UnitSpec = {
   factor: number;
   offset?: number;
 };
+
+type UnitMap = Record<string, UnitSpec>;
 
 type DimensionDefinition<Name extends string, Units extends UnitMap> = {
   name: Name;
@@ -55,27 +103,26 @@ type DimensionDefinition<Name extends string, Units extends UnitMap> = {
 };
 ```
 
-The returned `DefinedDimension<Name, Units>` exposes `name`, `baseUnitSymbol`,
-`units`, `quantity(value, unit)`, and `factory(unit)`. Use `as const` on the
-definition when the unit names should remain literal types. The unit union then
-flows through `quantity`, `factory`, and `convertTo`:
+The returned object exposes:
 
-```typescript
-const centimeters = Length.quantity(25, "cm");
-const inMeters = centimeters.convertTo("m");
+- `name`
+- `baseUnitSymbol`
+- `units`
+- `quantity(value, unit)`
+- `factory(unit)`
 
-// Compile-time errors:
-// Length.quantity(25, "yards");
-// centimeters.convertTo("s");
-```
+`as const` is recommended when you want literal unit unions to flow through the helper types.
 
-### Validation and replacement
+### Validation rules
 
-Validation runs before registry mutation. Names and symbols must be non-empty,
-factors must be finite and positive, and the base unit must be declared with
-factor `1` and offset `0` or omitted. Dimension names and unit symbols are
-unique by default. `{ overwrite: true }` replaces a dimension and removes its
-previous units:
+`defineDimension` validates before mutating the registry:
+
+- dimension names must be non-empty
+- base unit symbol must be non-empty
+- base unit symbol must be present in `units`
+- base unit factor must equal `1` and offset must equal `0`
+- every unit factor must be finite and greater than zero
+- duplicate dimension names and unit symbols are rejected unless `overwrite: true` is used
 
 ```typescript
 const RevisedLength = defineDimension(
@@ -93,25 +140,11 @@ const RevisedLength = defineDimension(
 console.log(RevisedLength.quantity(1, "m").convertTo("mm").value); // 1000
 ```
 
-Definitions expose their original unit objects and are not frozen at runtime.
-Mutating them can make an inspected definition differ from the already
-registered unit lookup; treat them as immutable configuration.
+## 4. Derived dimensions and expression grammar
 
-## 3. Complex dimensions
+`defineComplexDimension` builds a new dimension from existing registered dimensions via an expression string.
 
 ```typescript
-const Time = defineDimension(
-  {
-    name: "Time",
-    baseUnitSymbol: "s",
-    units: {
-      s: { factor: 1 },
-      min: { factor: 60 },
-      h: { factor: 3600 },
-    },
-  } as const,
-);
-
 const Speed = defineComplexDimension("Speed", () => "Length / Time");
 const Area = defineComplexDimension("Area", () => "Length ^ 2");
 const Acceleration = defineComplexDimension(
@@ -119,72 +152,78 @@ const Acceleration = defineComplexDimension(
   () => "Length / Time ^ 2",
 );
 
-console.log(Speed.quantity(10, "m/s").convertTo("cm/h").value);
-console.log(Area.quantity(2, "m^2").convertTo("cm^2").value);
-console.log(Acceleration.quantity(1, "m/s^2").convertTo("cm/min^2").value);
+console.log(Speed.quantity(10, "m/s").convertTo("km/h").value); // 36
+console.log(Area.quantity(2, "m^2").convertTo("cm^2").value); // 20000
+console.log(Acceleration.quantity(1, "m/s^2").convertTo("cm/min^2").value); // 360000
 ```
 
-The expression is evaluated against dimensions that already exist. Supported
-syntax is an identifier, followed by zero or more `*` or `/` operators, with an
-optional positive integer exponent after each identifier:
+Supported expression forms include dimension names, multiplication, division, optional whitespace, and positive integer exponents:
 
 ```text
 Length
 Length * Time
 Length / Time
 Length / Time ^ 2
-$CustomDimension * Length ^ 3
+Mass * Length / Time ^ 2
 ```
 
-The parser does not support `+` or `-`, despite an outdated comment in the
-implementation. Negative and zero exponents are also rejected. Every combination
-of component units is generated. For example, `Length / Time` generates `m/s`,
-`m/min`, `cm/s`, and `cm/min`, with factors calculated relative to `m/s`.
+Important runtime behavior:
 
-The generated base symbol uses the base unit of every component. Composite
-symbols use `*` between numerator terms, `/` before denominator terms, and `^N`
-for powers. A complex dimension cannot include a unit with a non-zero offset;
-defining `Length * Temperature` fails if `Temperature` includes Celsius.
+- every generated combination of component units is included
+- units with non-zero offsets cannot participate in complex dimensions
+- expressions must resolve against known dimensions
+- literal numeric coefficients are rejected in complex-dimension expressions
+- zero or negative exponents are not valid in the public parser grammar
 
-## 4. Quantity interface and operations
+## 5. Dimension equivalence
+
+`defineEquivalence` registers a canonical dimension relationship so different names can be treated as the same physical quantity.
 
 ```typescript
-interface Quantity<
-  DS extends DimensionSignature,
-  Units extends string = string,
-> {
+import { defineDimension, defineEquivalence } from "@eng-tools/ts-units";
+
+const Force = defineDimension({
+  name: "Force",
+  baseUnitSymbol: "N",
+  units: {
+    N: { factor: 1 },
+    kN: { factor: 1000 },
+    lbf: { factor: 4.44822 },
+  },
+} as const);
+
+defineEquivalence("Force", () => "Mass * Length / Time ^ 2");
+```
+
+Equivalences are resolved transitively and symmetrically. Once registered, signatures represented by different names can be compared and combined through a canonicalized dimension signature. This is used internally to simplify comparisons and operations that should treat equivalent dimensions as the same quantity family.
+
+## 6. Quantity model and operations
+
+The `Quantity` interface is the primary public behavior model:
+
+```typescript
+interface Quantity<DS extends DimensionSignature, Units extends string = string> {
   readonly _dimensionSignature: DS;
   readonly _valueInBaseUnits: number;
   value: number;
   unitSymbol: string;
-  add<OtherUnits extends string>(
-    other: Quantity<DS, OtherUnits>,
-  ): Quantity<DS, Units>;
-  subtract<OtherUnits extends string>(
-    other: Quantity<DS, OtherUnits>,
-  ): Quantity<DS, Units>;
-  multiply<OtherDS extends DimensionSignature, OtherUnits extends string>(
-    other: Quantity<OtherDS, OtherUnits>,
-  ): Quantity<CombineDimensionSignatures<DS, OtherDS>, string>;
-  divide<OtherDS extends DimensionSignature, OtherUnits extends string>(
-    other: Quantity<OtherDS, OtherUnits>,
-  ): Quantity<DivideDimensionSignatures<DS, OtherDS>, string>;
-  convertTo<TargetUnit extends Units>(
-    targetUnitSymbol: TargetUnit,
-  ): Quantity<DS, TargetUnit>;
-  equals(other: Quantity<DS, string>): boolean;
-  isLessThan(other: Quantity<DS, string>): boolean;
-  isGreaterThan(other: Quantity<DS, string>): boolean;
+
+  add<OtherUnits extends string>(other: Quantity<DS, OtherUnits>): Quantity<DS, Units>;
+  subtract<OtherUnits extends string>(other: Quantity<DS, OtherUnits>): Quantity<DS, Units>;
+  multiply<OtherDS extends DimensionSignature, OtherUnits extends string>(other: Quantity<OtherDS, OtherUnits>): Quantity<CombineDimensionSignatures<DS, OtherDS>, string>;
+  divide<OtherDS extends DimensionSignature, OtherUnits extends string>(other: Quantity<OtherDS, OtherUnits>): Quantity<DivideDimensionSignatures<DS, OtherDS>, string>;
+  pow<Exponent extends number>(exponent: Exponent): Quantity<ScaleDimensionSignature<DS, Exponent>, string>;
+  convertTo<TargetUnit extends Units>(targetUnitSymbol: TargetUnit): Quantity<DS, TargetUnit>;
+  equals(other: Quantity<DimensionSignature, string>): boolean;
+  isLessThan(other: Quantity<DimensionSignature, string>): boolean;
+  isGreaterThan(other: Quantity<DimensionSignature, string>): boolean;
   valueOf(): number;
   toString(): string;
   toJSON(): { value: number; unit: string };
 }
 ```
 
-### Addition and subtraction
-
-The receiver controls the result unit. Both values are converted through base
-units before the operation:
+### Arithmetic
 
 ```typescript
 const oneMeter = Length.quantity(1, "m");
@@ -192,94 +231,66 @@ const oneHundredCentimeters = Length.quantity(100, "cm");
 
 const sum = oneMeter.add(oneHundredCentimeters);
 const difference = oneMeter.subtract(oneHundredCentimeters);
+const product = oneMeter.multiply(oneMeter);
+const ratio = oneMeter.divide(oneHundredCentimeters);
 
-console.log(sum.value, sum.unitSymbol); // 2, "m"
+console.log(sum.value, sum.unitSymbol); // 2 "m"
 console.log(difference.value); // 0
+console.log(product.unitSymbol); // "m^2"
+console.log(ratio.unitSymbol); // "dimensionless"
 ```
 
-Different runtime signatures throw an error such as
-`Dimension mismatch: cannot add Time^1 to Length^1`.
+Rules:
 
-### Multiplication and division
+- `add` and `subtract` require matching dimensions
+- `multiply` combines signatures by adding exponents
+- `divide` subtracts exponents and removes zero exponents
+- `pow(exponent)` scales the signature by the integer power and raises the value
+- division by zero throws `Division by zero`
+
+### Comparison and equality
 
 ```typescript
-const rectangle = Length.quantity(4, "m").multiply(Length.quantity(3, "m"));
-console.log(rectangle.value, rectangle.unitSymbol); // 12, "m^2"
+const first = Length.quantity(1, "m");
+const second = Length.quantity(100, "cm");
+const third = Length.quantity(2, "m");
 
-const speed = Length.quantity(120, "m").divide(Time.quantity(10, "s"));
-console.log(speed.value, speed.unitSymbol); // 12, "m/s"
-
-const ratio = Length.quantity(1, "m").divide(Length.quantity(100, "cm"));
-console.log(ratio.value, ratio.unitSymbol); // 1, "dimensionless"
+console.log(first.equals(second)); // true
+console.log(first.isLessThan(third)); // true
+console.log(third.isGreaterThan(first)); // true
 ```
 
-Runtime signatures add exponents for multiplication and subtract them for
-division, removing dimensions whose exponent becomes zero. Division by a zero
-base-unit value throws `Division by zero`. Composite operation results have
-`string` as their unit set because their symbols are generated at runtime.
+Equality compares base-unit values within a `1e-9` tolerance. `isLessThan` and `isGreaterThan` throw `Dimension mismatch` when the dimensions are not equivalent.
 
-### Conversion and comparison
+## 7. Affine units and offsets
+
+Affine units use the stored base value:
+
+```text
+baseValue = value * factor + offset
+```
+
+This supports temperature scales like Celsius and Fahrenheit:
 
 ```typescript
-const distance = Length.quantity(1, "m");
-console.log(distance.convertTo("cm").value); // 100
+const Temperature = defineDimension({
+  name: "Temperature",
+  baseUnitSymbol: "K",
+  units: {
+    K: { factor: 1 },
+    degC: { factor: 1, offset: 273.15 },
+    degF: { factor: 5 / 9, offset: 255.37222222222222 },
+  },
+} as const);
 
-const sameDistance = Length.quantity(100, "cm");
-console.log(distance.equals(sameDistance)); // true
-console.log(distance.isLessThan(Length.quantity(2, "m"))); // true
-console.log(distance.isGreaterThan(sameDistance)); // false
+console.log(Temperature.quantity(20, "degC").convertTo("K").value); // 293.15
 ```
 
-`convertTo` requires a registered unit from the same runtime dimension. `equals`
-returns `false` for different dimensions and uses an absolute base-value
-tolerance of `1e-9`. Ordering methods throw `Dimension mismatch` for different
-dimensions.
+Important caveat: the library models affine conversion correctly, but it does not distinguish absolute temperatures from temperature differences. This means it is up to the caller to interpret the semantics of subtraction and addition for non-zero-offset units. These units also cannot participate in complex-dimension expressions.
 
-## 5. Affine units
+## 8. Registry APIs
 
-```typescript
-const Temperature = defineDimension(
-  {
-    name: "Temperature",
-    baseUnitSymbol: "K",
-    units: {
-      K: { factor: 1 },
-      C: { factor: 1, offset: 273.15 },
-    },
-  } as const,
-);
-
-const room = Temperature.quantity(20, "C");
-console.log(room.convertTo("K").value); // 293.15
-```
-
-The stored base value is `value * factor + offset`. Arithmetic does not
-distinguish absolute values from differences, so callers must choose the
-intended semantics for temperature subtraction and addition. Non-zero-offset
-units cannot be used when generating a complex dimension.
-
-## 6. Serialization and interop
-
-```typescript
-const original = Length.quantity(1.5, "km");
-const serialized = original.toJSON();
-// { value: 1.5, unit: "km" }
-
-const restored = Length.quantity(
-  serialized.value,
-  serialized.unit as keyof typeof Length.units,
-);
-
-console.log(String(restored)); // "1.50000 km"
-console.log(Number(restored)); // 1.5
-```
-
-`valueOf()` returns the value in the current unit, not the base unit.
-`toString()` uses `toPrecision(6)`. `toJSON()` returns
-`{ value: number, unit: string }`; validate external unit strings before passing
-them to a dimension's typed `quantity` helper.
-
-## 7. Registry introspection
+The registry is introspectable at runtime:
 
 ```typescript
 import {
@@ -288,115 +299,91 @@ import {
   getUnitDefinition,
 } from "@eng-tools/ts-units";
 
-const names = getAllDimensions().map(({ name }) => name);
-const lengthDefinition = getDimensionDefinition("Length");
-const centimeterFactory = lengthDefinition.factory("cm");
-const centimeter = getUnitDefinition("cm");
+console.log(getAllDimensions().map(({ name }) => name));
 
-console.log(names);
+const lengthDefinition = getDimensionDefinition("Length");
 console.log(lengthDefinition.baseUnitSymbol); // "m"
-console.log(centimeterFactory(1).convertTo("m").value); // 0.01
+console.log(lengthDefinition.factory("cm")(25).convertTo("m").value); // 0.25
+
+const centimeter = getUnitDefinition("cm");
 console.log(centimeter);
 // { symbol: "cm", factor: 0.01, offset: 0, dimensionName: "Length" }
 ```
 
-Missing lookups throw `Dimension "..." is not defined.` or
-`Unit "..." is not defined.`. `getDimensionDefinition()` returns an operational
-`DefinedDimension` with `quantity` and `factory`, but its lookup-by-string type
-cannot preserve literal name and unit unions. `getAllDimensions()` returns only
-explicitly registered raw definitions.
+`getAllDimensions()` returns all registered dimensions, `getDimensionDefinition(name)` returns the operational definition with `quantity` and `factory` APIs, and `getUnitDefinition(symbol)` returns the raw unit metadata for a registered symbol.
 
-## 8. `Q` and signature types
+## 9. Low-level `Q` and type utilities
 
-`Q` is the exported concrete implementation and accepts a value plus a
-registered symbol:
+`Q` is the concrete quantity class and can be used directly when a custom path needs it:
 
 ```typescript
 import { Q } from "@eng-tools/ts-units";
 
-const rawQuantity = new Q(12, "m");
-console.log(rawQuantity.value, rawQuantity.unitSymbol);
+const q = new Q(12, "m");
+console.log(q.value, q.unitSymbol);
 ```
 
-Direct construction validates the symbol at runtime, but it cannot infer the
-same precise dimension and unit unions as a `DefinedDimension` helper. Prefer
-`Length.quantity` in application code.
+Most application code should prefer the typed dimension helpers returned by `defineDimension`, because they preserve literal unit unions and dimension-specific APIs.
 
-The exported signature types describe dimensional exponents without a fixed SI
-list:
+The package also exports the type-level dimension utilities:
 
 ```typescript
 import type {
   CombineDimensionSignatures,
-  DimensionSignature,
-  DimensionUnitSymbols,
   DivideDimensionSignatures,
+  DimensionSignature,
   SimpleDimensionSignature,
+  DimensionUnitSymbols,
 } from "@eng-tools/ts-units";
 
 type LengthSignature = SimpleDimensionSignature<"Length">;
 type AreaSignature = CombineDimensionSignatures<
   { Length: 1 },
   { Length: 1 }
->; // { Length: 2 }
+>;
 type SpeedSignature = DivideDimensionSignatures<
   { Length: 1 },
   { Time: 1 }
->; // { Length: 1; Time: -1 }
-type Unit = DimensionUnitSymbols<typeof Length>;
-const signature: DimensionSignature = { Length: 1 };
+>;
 ```
 
-`CombineDimensionSignatures` adds exponents and `DivideDimensionSignatures`
-subtracts them. Runtime signatures remove zero exponents. Type-level arithmetic
-is designed for small dimensional exponents, not arbitrary numeric computation.
-`AllowedUnit` is deprecated and resolves to `never`; a signature alone cannot
-identify an application's custom unit-symbol set.
+These helpers are designed for the small whole-number exponent patterns used in dimensional analysis, not general symbolic algebra.
 
-## 9. Exported functions and types
+## 10. Error behavior and compatibility contracts
 
-Runtime exports from the package entry point:
-
-```typescript
-import {
-  defineComplexDimension,
-  defineDimension,
-  getAllDimensions,
-  getDimensionDefinition,
-  getUnitDefinition,
-  Q,
-} from "@eng-tools/ts-units";
-```
-
-The entry point also exports `Quantity` as a type, all types from
-`types/signature.ts`, and these dimension types: `DefinedDimension`,
-`DimensionDefinition`, `DimensionUnitSymbols`, `UnitDefinition`, `UnitMap`, and
-`UnitSpec`.
-
-The public `Q` class also exposes static runtime helpers for signature
-comparison, combination, division, composite-symbol derivation, and construction
-from a base-unit value. They are useful for infrastructure code, but normal
-application code should use registered dimension helpers and quantity instance
-methods.
-
-## 10. Error reference
-
-Common validation and operation failures include:
+Validation and runtime behavior are intentionally strict:
 
 ```text
 Dimension name must be non-empty.
 Base unit "kg" is not declared for dimension "Mass".
 Base unit "m" for dimension "Length" must have a conversion factor of 1 and offset of 0.
 Unit "m" is not defined.
-Unit symbol "m" is already registered to dimension "Length".
 Dimension "Unknown" is not defined.
-Invalid complex dimension expression "Length + Time".
-Complex dimension exponents must be positive integers.
-Cannot compose unit "C" with a non-zero offset.
+Unit symbol "m" is already registered to dimension "Length".
 Division by zero
+Dimension mismatch
 ```
 
-Exact addition and subtraction mismatch messages include the two signatures;
-comparison mismatch messages use the shorter `Dimension mismatch` form.
-Definitions are validated before mutation, so a failed registration does not
-partially add its units.
+Important compatibility notes:
+
+- `convertTo` requires a unit in the same dimension signature
+- `equals` returns `false` for different dimensions rather than throwing
+- ordering methods throw `Dimension mismatch` when dimensions differ
+- `defineComplexDimension` and `defineEquivalence` both validate their dimensional expressions before registration
+- definitions are validated before registry mutation, so failed registrations do not leave partial state behind
+
+## 11. Summary of project capabilities
+
+The current project supports:
+
+- built-in SI and engineering dimensions
+- custom dimension registration
+- affine unit conversion
+- dimension expression composition
+- dimension equivalence resolution
+- value arithmetic and unit conversion
+- runtime introspection via the registry
+- static dimensional typing for common application code
+
+This makes the package suitable for domain models, calculators, and engineering tooling that need safe and consistent dimensional behavior without hard-coding a single global unit system.
+
